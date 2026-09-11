@@ -1,0 +1,38 @@
+horse-racing-dashboard/
+├── app/
+│   ├── layout.tsx                 # Root layout, dark mode, fonts, global providers
+│   ├── page.tsx                   # Home: today's races list
+│   ├── globals.css                # Tailwind base + custom dark theme tokens
+│   ├── race/
+│   │   └── [raceId]/
+│   │       └── page.tsx           # Race detail view: AI analysis ranked by confidence
+│   └── api/
+│       ├── scrape/
+│       │   └── route.ts           # POST/GET — fetches raw race data, writes to Supabase/cache (Node runtime)
+│       └── predict/
+│           └── route.ts           # POST/GET — reads cached data, calls AI engine, returns structured JSON (Node runtime)
+├── components/
+│   ├── ui/
+│   │   ├── Card.tsx
+│   │   ├── ProgressBar.tsx        # speed maps / weight disadvantage bars
+│   │   └── Badge.tsx              # confidence score badge
+│   ├── RaceList.tsx                # today's races grid
+│   ├── RaceCard.tsx
+│   ├── HorseAnalysisTable.tsx      # ranked by confidence score
+│   └── ValueBetChart.tsx           # probability vs odds chart
+├── lib/
+│   ├── scraper.ts                  # Cheerio/native fetch scraping logic, typed output
+│   ├── ai.ts                       # Gemini/Groq SDK integration, structured outputs
+│   ├── supabase.ts                 # Supabase client + typed query helpers
+│   ├── cache.ts                    # local JSON cache fallback (decouples scrape/predict)
+│   └── types.ts                    # shared TypeScript types (Race, Horse, Prediction, ValueBet)
+├── public/
+│   └── (icons, static assets)
+├── .env.local                      # local secrets (not committed)
+├── .env.example                    # template committed to repo
+├── next.config.js                  # runtime config (Node vs Edge per route)
+├── vercel.json                     # function region/timeout/runtime overrides
+├── tailwind.config.ts
+├── tsconfig.json
+├── package.json
+└── README.md

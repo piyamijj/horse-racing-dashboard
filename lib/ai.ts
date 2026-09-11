@@ -20,6 +20,13 @@ import type {
   RacePrediction,
   AIRawPredictionResponse,
 } from "./types";
+import {
+  getActiveKey,
+  markFailed,
+  markSuccess,
+  allKeysExhausted,
+  describeKeyForLog,
+} from "./keyRotation";
 
 const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-flash-latest";
 const GROQ_MODEL = process.env.GROQ_MODEL || "openai/gpt-oss-120b";
@@ -171,10 +178,25 @@ function extractJson(text: string): AIRawPredictionResponse {
   return JSON.parse(cleaned) as AIRawPredictionResponse;
 }
 
-async function analyzeWithGemini(race: Race): Promise<HorsePrediction[]> {
-  const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey) throw new Error("GEMINI_API_KEY is not set.");
+/** Classifies a provider error into the two cooldown buckets keyRotation understands. */
+function classifyError(err: unknown): "quota" | "transient" {
+  const message = err instanceof Error ? err.message : String(err);
+  if (
+    message.includes("429") ||
+    /quota/i.test(message) ||
+    /rate.?limit/i.test(message) ||
+    /RESOURCE_EXHAUSTED/i.test(message)
+  ) {
+    return "quota";
+  }
+  return "transient"; // 503 / UNAVAILABLE / momentary overload / anything else unexpected
+}
 
+/**
+ * Tries one Gemini call with a single specific key. Left as a thin wrapper
+ * so the rotation loop below can call it once per key attempt.
+ */
+async function analyzeWithGeminiKey(race: Race, apiKey: string): Promise<HorsePrediction[]> {
   const genAI = new GoogleGenerativeAI(apiKey);
   const model = genAI.getGenerativeModel({
     model: GEMINI_MODEL,
@@ -193,10 +215,50 @@ async function analyzeWithGemini(race: Race): Promise<HorsePrediction[]> {
   return finalizePredictions(race, raw);
 }
 
-async function analyzeWithGroq(race: Race): Promise<HorsePrediction[]> {
-  const apiKey = process.env.GROQ_API_KEY;
-  if (!apiKey) throw new Error("GROQ_API_KEY is not set.");
+/**
+ * Pools all 5 Gemini keys: pulls the next round-robin key that isn't in
+ * cooldown, tries it, and on failure marks it cooled-down (429/quota → 10
+ * min, transient 503 → 15s) then immediately tries the next available key.
+ * Exhausts every non-cooling key once before giving up so a single bad key
+ * never blocks the other 4 from being tried in the same request.
+ */
+async function analyzeWithGeminiPool(race: Race): Promise<HorsePrediction[]> {
+  if (allKeysExhausted("gemini")) {
+    throw new Error("All Gemini keys are currently cooling down.");
+  }
 
+  const triedKeys = new Set<string>();
+  let lastErr: unknown = new Error("No Gemini keys configured.");
+
+  // Bound attempts to the pool size — never loop forever if every key fails.
+  const maxAttempts = 5;
+  for (let i = 0; i < maxAttempts; i++) {
+    const key = getActiveKey("gemini");
+    if (!key || triedKeys.has(key)) break; // exhausted the pool or looped back
+    triedKeys.add(key);
+
+    try {
+      const predictions = await analyzeWithGeminiKey(race, key);
+      markSuccess("gemini", key);
+      return predictions;
+    } catch (err) {
+      lastErr = err;
+      const reason = classifyError(err);
+      console.error(
+        `[ai] Gemini key ${describeKeyForLog(key)} failed (${reason}), rotating:`,
+        err instanceof Error ? err.message : err
+      );
+      markFailed("gemini", key, reason);
+      // Only retry transient errors inline within this pool pass; a quota
+      // failure moves straight to the next key too (markFailed already
+      // advanced the pointer), so no special branching needed here.
+    }
+  }
+
+  throw lastErr;
+}
+
+async function analyzeWithGroqKey(race: Race, apiKey: string): Promise<HorsePrediction[]> {
   const groq = new Groq({ apiKey });
 
   const completion = await groq.chat.completions.create({
@@ -218,30 +280,61 @@ async function analyzeWithGroq(race: Race): Promise<HorsePrediction[]> {
   return finalizePredictions(race, raw);
 }
 
+/** Same pooling strategy as Gemini's, applied to Groq's 5 keys. */
+async function analyzeWithGroqPool(race: Race): Promise<HorsePrediction[]> {
+  if (allKeysExhausted("groq")) {
+    throw new Error("All Groq keys are currently cooling down.");
+  }
+
+  const triedKeys = new Set<string>();
+  let lastErr: unknown = new Error("No Groq keys configured.");
+
+  const maxAttempts = 5;
+  for (let i = 0; i < maxAttempts; i++) {
+    const key = getActiveKey("groq");
+    if (!key || triedKeys.has(key)) break;
+    triedKeys.add(key);
+
+    try {
+      const predictions = await analyzeWithGroqKey(race, key);
+      markSuccess("groq", key);
+      return predictions;
+    } catch (err) {
+      lastErr = err;
+      const reason = classifyError(err);
+      console.error(
+        `[ai] Groq key ${describeKeyForLog(key)} failed (${reason}), rotating:`,
+        err instanceof Error ? err.message : err
+      );
+      markFailed("groq", key, reason);
+    }
+  }
+
+  throw lastErr;
+}
+
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 /**
  * Gemini's free tier intermittently returns 503 "high demand" errors that
- * clear within seconds (observed live: same key/model alternates between
- * 200 and 503 call to call) — a single retry with a short backoff recovers
- * the large majority of these without needing to fall back to Groq (whose
- * free tier has a much tighter daily token budget, better saved for when
- * Gemini is genuinely down rather than momentarily busy).
+ * clear within seconds. analyzeWithGeminiPool already rotates across all 5
+ * keys on any failure (quota OR transient), so this outer retry loop exists
+ * only to give the whole pool a second full pass after a short backoff, in
+ * case every key was transiently busy at the same instant (rare, but cheap
+ * to guard against before paying Groq's tighter daily token budget).
  */
 async function analyzeWithGeminiRetrying(race: Race): Promise<HorsePrediction[]> {
-  const attempts = 3;
+  const attempts = 2; // each attempt already sweeps up to 5 keys internally
   let lastErr: unknown;
 
   for (let i = 0; i < attempts; i++) {
     try {
-      return await analyzeWithGemini(race);
+      return await analyzeWithGeminiPool(race);
     } catch (err) {
       lastErr = err;
-      const message = err instanceof Error ? err.message : String(err);
-      const isTransient = message.includes("503") || message.includes("UNAVAILABLE");
-      if (!isTransient || i === attempts - 1) throw err;
+      if (i === attempts - 1) throw err;
       await sleep(1500 * (i + 1));
     }
   }
@@ -250,10 +343,11 @@ async function analyzeWithGeminiRetrying(race: Race): Promise<HorsePrediction[]>
 }
 
 /**
- * Main entry point used by /api/predict.
- * Tries Gemini first (with retry on transient 503s), falling back to Groq
- * only if Gemini still fails (missing key, non-transient error, or retries
- * exhausted). Throws only if both providers fail.
+ * Main entry point used by /api/predict and /api/altili.
+ * Tries the full Gemini key pool first (round-robin across all 5 keys,
+ * skipping any in cooldown, one retry pass on transient failures), falling
+ * back to the full Groq key pool only if every Gemini key failed. Throws
+ * only if every key across both providers failed.
  */
 export async function analyzeRace(race: Race): Promise<RacePrediction> {
   try {
@@ -266,9 +360,9 @@ export async function analyzeRace(race: Race): Promise<RacePrediction> {
       predictions,
     };
   } catch (geminiErr) {
-    console.error("[ai] Gemini analysis failed, falling back to Groq:", geminiErr);
+    console.error("[ai] All Gemini keys failed, falling back to Groq pool:", geminiErr);
 
-    const predictions = await analyzeWithGroq(race);
+    const predictions = await analyzeWithGroqPool(race);
     return {
       raceId: race.id,
       generatedAt: new Date().toISOString(),

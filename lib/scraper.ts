@@ -161,6 +161,7 @@ async function fetchFromTjkEbayi(): Promise<Race[] | null> {
           condition: undefined,
           horses,
           scrapedAt: new Date().toISOString(),
+          bettingTypesRaw: typeof k.BAHISLER_TR === "string" ? k.BAHISLER_TR : undefined,
         });
       }
     }

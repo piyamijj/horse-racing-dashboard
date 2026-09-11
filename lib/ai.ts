@@ -38,6 +38,8 @@ const GEMINI_RESPONSE_SCHEMA = {
           winProbabilityPercent: { type: SchemaType.NUMBER },
           confidenceScore: { type: SchemaType.NUMBER },
           reasoning: { type: SchemaType.STRING },
+          isPotentialUpset: { type: SchemaType.BOOLEAN },
+          upsetReasoning: { type: SchemaType.STRING },
           factors: {
             type: SchemaType.OBJECT,
             properties: {
@@ -54,6 +56,8 @@ const GEMINI_RESPONSE_SCHEMA = {
           "winProbabilityPercent",
           "confidenceScore",
           "reasoning",
+          "isPotentialUpset",
+          "upsetReasoning",
           "factors",
         ],
       },
@@ -70,6 +74,8 @@ Rules:
 - confidenceScore (0-100) reflects how much signal the input data actually contains (e.g. low if speedRating/form data is sparse or missing) — it is NOT the same as winProbabilityPercent.
 - factors.speedRatingScore, weightDisadvantageScore, formScore are each 0-100 normalized sub-scores you derive from the raw fields, for charting.
 - reasoning must be a concise (2-4 sentence) explanation citing the specific numbers you used (e.g. "Speed rating 88 vs field average 74, weight 54kg is 4kg lighter than the field median, form 1-2-1 shows consistent front-running.").
+- isPotentialUpset: set true ONLY for a horse that is NOT your own top pick in this race, but whose underlying factors (a notably light weight relief, a sharp recent form reversal, an unusually favorable barrier, a live value edge if odds are available) suggest a realistic chance of surprising the favorites. Do not mark more than one horse per race as a potential upset, and do not mark the favorite itself. If no horse meaningfully qualifies, set isPotentialUpset to false for every horse.
+- upsetReasoning: when isPotentialUpset is true, give a concise 1-2 sentence explanation citing the specific factor(s) that could produce a surprise. When isPotentialUpset is false, return an empty string.
 - Return ONLY the JSON object matching the schema. No prose outside the JSON.`;
 
 function buildUserPrompt(race: Race): string {
@@ -140,6 +146,8 @@ function finalizePredictions(
         valueEdgePercent,
         oddsAvailable,
         isValueBet: oddsAvailable && valueEdgePercent > 0,
+        isPotentialUpset: Boolean(p.isPotentialUpset),
+        upsetReasoning: p.upsetReasoning || "",
         reasoning: p.reasoning,
         factors: {
           speedRatingScore: Math.max(0, Math.min(100, p.factors.speedRatingScore)),
@@ -199,7 +207,7 @@ async function analyzeWithGroq(race: Race): Promise<HorsePrediction[]> {
       { role: "system", content: SYSTEM_INSTRUCTION },
       {
         role: "user",
-        content: `${buildUserPrompt(race)}\n\nRespond with a single JSON object of the exact shape: {"predictions":[{"horseId":string,"horseName":string,"winProbabilityPercent":number,"confidenceScore":number,"reasoning":string,"factors":{"speedRatingScore":number,"weightDisadvantageScore":number,"formScore":number}}]}`,
+        content: `${buildUserPrompt(race)}\n\nRespond with a single JSON object of the exact shape: {"predictions":[{"horseId":string,"horseName":string,"winProbabilityPercent":number,"confidenceScore":number,"reasoning":string,"isPotentialUpset":boolean,"upsetReasoning":string,"factors":{"speedRatingScore":number,"weightDisadvantageScore":number,"formScore":number}}]}`,
       },
     ],
   });

@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import Link from "next/link";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -31,9 +32,17 @@ export default function RootLayout({
                   </p>
                 </div>
               </div>
-              <span className="text-xs text-muted hidden sm:block">
-                Veri kaynağı: TJK · Analiz: Gemini / Groq
-              </span>
+              <nav className="flex items-center gap-4">
+                <Link
+                  href="/altili-ganyan"
+                  className="text-sm font-medium text-primary hover:text-primary/80 transition-colors"
+                >
+                  Altılı Ganyan
+                </Link>
+                <span className="text-xs text-muted hidden sm:block">
+                  Veri kaynağı: TJK · Analiz: Gemini / Groq
+                </span>
+              </nav>
             </div>
           </header>
 

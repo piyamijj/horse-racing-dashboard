@@ -44,6 +44,8 @@ export interface Race {
   horses: Horse[];
   /** When this record was scraped (ISO 8601), for cache-freshness checks. */
   scrapedAt: string;
+  /** Raw TJK betting-types string for this race (e.g. "1. ÇİFTE, 1. 6'LI GANYAN bu koşudan başlar, GANYAN, İKİLİ"), used to detect Altılı Ganyan legs. Undefined for demo/non-TJK sources. */
+  bettingTypesRaw?: string;
 }
 
 /** AI-produced value-bet analysis for a single horse in a race. */
@@ -62,6 +64,10 @@ export interface HorsePrediction {
   oddsAvailable: boolean;
   /** Whether the model flags this as a +EV "value bet". */
   isValueBet: boolean;
+  /** True when the model flags this horse (typically NOT its own top pick) as a plausible surprise/upset based on the supplied factors. */
+  isPotentialUpset: boolean;
+  /** Why this horse could surprise, when isPotentialUpset is true; empty otherwise. */
+  upsetReasoning: string;
   /** Structured mathematical/statistical reasoning, not free-form guessing. */
   reasoning: string;
   /** Key quantitative factors the model weighed, for chart display. */
@@ -94,6 +100,8 @@ export interface AIRawPredictionItem {
   winProbabilityPercent: number;
   confidenceScore: number;
   reasoning: string;
+  isPotentialUpset: boolean;
+  upsetReasoning: string;
   factors: {
     speedRatingScore: number;
     weightDisadvantageScore: number;
@@ -103,6 +111,31 @@ export interface AIRawPredictionItem {
 
 export interface AIRawPredictionResponse {
   predictions: AIRawPredictionItem[];
+}
+
+/** One row of the Altılı Ganyan (6-leg accumulator) summary table. */
+export interface AltiliLegSummary {
+  legNumber: number; // 1-6
+  raceId: string;
+  raceNumber: number;
+  track: string;
+  startTime: string;
+  topPick: { horseNumber: number; horseName: string; winProbabilityPercent: number };
+  /** A second horse whose probability is close to the top pick's (near-tie), if any. */
+  nearTie?: { horseNumber: number; horseName: string; winProbabilityPercent: number };
+  /** The AI-flagged potential upset for this leg, if any. */
+  upset?: {
+    horseNumber: number;
+    horseName: string;
+    winProbabilityPercent: number;
+    reasoning: string;
+  };
+}
+
+export interface AltiliSummary {
+  track: string;
+  date: string;
+  legs: AltiliLegSummary[];
 }
 
 /** Generic result wrapper for scrape/predict API responses. */

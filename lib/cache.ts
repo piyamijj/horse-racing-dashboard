@@ -4,10 +4,19 @@
 // (the API routes) can swap between the two without changing their logic.
 
 import fs from "fs";
+import os from "os";
 import path from "path";
 import type { Race, RacePrediction } from "./types";
 
-const CACHE_DIR = path.join(process.cwd(), ".cache");
+// Vercel's serverless filesystem is read-only except for /tmp, which is the
+// only writable directory at runtime. Locally, process.cwd()/.cache is used
+// instead so cached data is easy to find during development. Either way,
+// this is a *fallback* cache — see lib/store.ts — and is not guaranteed to
+// persist across serverless invocations/deployments; configure Supabase for
+// durable storage in production.
+const CACHE_DIR = process.env.VERCEL
+  ? path.join(os.tmpdir(), "horse-racing-cache")
+  : path.join(process.cwd(), ".cache");
 const RACES_FILE = path.join(CACHE_DIR, "races.json");
 const PREDICTIONS_FILE = path.join(CACHE_DIR, "predictions.json");
 

@@ -40,6 +40,17 @@ export function getSupabaseClient(): SupabaseClient {
 
   cachedClient = createClient(url, key, {
     auth: { persistSession: false },
+    // Next.js patches the global fetch() to cache requests by default even
+    // inside a `force-dynamic` route — that patch applies per-fetch-call, not
+    // per-route, so the Supabase JS client's own internal fetch() calls were
+    // silently served from Next's Data Cache instead of hitting Postgres each
+    // time (observed live: /api/races kept returning the first-ever scrape's
+    // data after later scrapes had clearly written fresh rows). Explicitly
+    // opting every Supabase request out of that cache fixes it.
+    global: {
+      fetch: (input: RequestInfo | URL, init?: RequestInit) =>
+        fetch(input, { ...init, cache: "no-store" }),
+    },
   });
 
   return cachedClient;

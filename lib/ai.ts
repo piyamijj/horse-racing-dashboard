@@ -116,10 +116,20 @@ function finalizePredictions(
     .filter((p) => horseById.has(p.horseId))
     .map((p) => {
       const horse = horseById.get(p.horseId)!;
-      const impliedProbabilityPercent = impliedProbabilityFromOdds(horse.currentOdds);
+      // TJK's live program feed does not always publish odds ahead of the
+      // betting window opening (currentOdds is 0/absent in that case). A
+      // missing odds value must NOT be treated as "0% implied probability" —
+      // that would make every horse look like a huge, spurious value bet.
+      // In that case we report the value-bet math as unavailable rather than
+      // fabricate an edge.
+      const oddsAvailable = Boolean(horse.currentOdds && horse.currentOdds > 0);
+      const impliedProbabilityPercent = oddsAvailable
+        ? impliedProbabilityFromOdds(horse.currentOdds)
+        : 0;
       const winProbabilityPercent = Math.max(0, Math.min(100, p.winProbabilityPercent));
-      const valueEdgePercent =
-        Math.round((winProbabilityPercent - impliedProbabilityPercent) * 10) / 10;
+      const valueEdgePercent = oddsAvailable
+        ? Math.round((winProbabilityPercent - impliedProbabilityPercent) * 10) / 10
+        : 0;
 
       return {
         horseId: p.horseId,
@@ -128,7 +138,8 @@ function finalizePredictions(
         confidenceScore: Math.max(0, Math.min(100, p.confidenceScore)),
         impliedProbabilityPercent,
         valueEdgePercent,
-        isValueBet: valueEdgePercent > 0,
+        oddsAvailable,
+        isValueBet: oddsAvailable && valueEdgePercent > 0,
         reasoning: p.reasoning,
         factors: {
           speedRatingScore: Math.max(0, Math.min(100, p.factors.speedRatingScore)),

@@ -58,10 +58,13 @@ export default function ValueBetChart({ predictions }: ValueBetChartProps) {
                     Değerli Bahis · +{p.valueEdgePercent.toFixed(1)} puan
                   </Badge>
                 )}
-                {!p.isValueBet && (
+                {!p.isValueBet && p.oddsAvailable && (
                   <Badge tone="neutral">
                     Fark: {p.valueEdgePercent.toFixed(1)} puan
                   </Badge>
+                )}
+                {!p.oddsAvailable && (
+                  <Badge tone="neutral">Oran henüz açıklanmadı</Badge>
                 )}
               </div>
             </div>
@@ -76,7 +79,9 @@ export default function ValueBetChart({ predictions }: ValueBetChartProps) {
             />
             <ProgressBar
               label="Oranların İma Ettiği Olasılık"
-              valueLabel={`%${p.impliedProbabilityPercent.toFixed(1)}`}
+              valueLabel={
+                p.oddsAvailable ? `%${p.impliedProbabilityPercent.toFixed(1)}` : "Oran yok"
+              }
               value={p.impliedProbabilityPercent}
               tone="accent"
               size="sm"

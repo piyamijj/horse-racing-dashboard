@@ -3,27 +3,39 @@
 // Data source strategy (in order of preference), per the build instructions
 // to prioritize TJK (Türkiye Jokey Kulübü) as the primary source:
 //
-//   1. TJK official data API (https://vhs.tjk.org/vss/data/program) —
-//      requires a TJK-issued `X-Auth` key (TJK_API_AUTH_KEY env var). This is
-//      the cleanest, most reliable source when available. Not a public/free
-//      key — TJK does not hand these out; the app works without one via the
-//      fallbacks below.
-//   2. Cheerio HTML scrape of the public TJK race-program pages
+//   1. TJK's public "ebayi" JSON feed (https://ebayi.tjk.org/s/d/...) — the
+//      same static, keyless, no-auth-header endpoint TJK's own website reads
+//      client-side, and the one real open-source community projects (e.g.
+//      SezerFidanci/TJK-API) actually use. Confirmed live and working from a
+//      cloud/serverless IP (no WAF block on this host, unlike www.tjk.org).
+//      Gives full race + horse structural data (weight, jockey, trainer,
+//      recent form, distance, surface, best times). Live odds (GANYAN/AGF)
+//      are frequently still empty on this feed ahead of the betting window
+//      opening — handled explicitly (see lib/ai.ts's oddsAvailable flag)
+//      rather than treated as "0 implied probability".
+//   2. TJK's official authenticated data API
+//      (https://vhs.tjk.org/vss/data/program) — requires a TJK-issued
+//      `X-Auth` key (TJK_API_AUTH_KEY env var). Not publicly available
+//      (verified: no self-service signup exists anywhere), but kept as a
+//      higher-fidelity path (incl. AGF/probable-odds) for if/when a key is
+//      obtained through an official TJK partnership.
+//   3. Cheerio HTML scrape of the public TJK race-program pages
 //      (https://www.tjk.org/...) — native fetch + Cheerio, no headless
 //      browser (keeps us inside Vercel's serverless size/time limits). TJK
-//      fronts its site with a WAF that can 403 requests from datacenter/cloud
-//      IPs; this path is best-effort and logs a clear reason when blocked.
-//   3. Synthetic demo dataset — deterministic, clearly labeled
+//      fronts this specific host with a WAF that 403s requests from
+//      datacenter/cloud IPs (confirmed live); kept only as a last-resort
+//      attempt in case that ever changes.
+//   4. Synthetic demo dataset — deterministic, clearly labeled
 //      (`source: "demo"`), so /api/scrape and /api/predict always have
-//      something to operate on end-to-end even when TJK is unreachable.
-//      This keeps the dashboard demoable and the pipeline testable; swap in
-//      a working TJK_API_AUTH_KEY or another accessible source to go live.
+//      something to operate on end-to-end even if every live source fails.
 //
 // Everything here is native fetch + Cheerio only — no Puppeteer.
 
 import * as cheerio from "cheerio";
 import type { Horse, Race } from "./types";
 
+const TJK_EBAYI_BASE_URL =
+  process.env.TJK_EBAYI_BASE_URL || "https://ebayi.tjk.org/s/d";
 const TJK_API_BASE_URL =
   process.env.TJK_API_BASE_URL || "https://vhs.tjk.org/vss/data";
 const TJK_PROGRAM_PAGE_URL =
@@ -33,7 +45,7 @@ const USER_AGENT =
   process.env.SCRAPER_USER_AGENT ||
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
 
-export type ScrapeSource = "tjk-api" | "tjk-html" | "demo";
+export type ScrapeSource = "tjk-ebayi" | "tjk-api" | "tjk-html" | "demo";
 
 export interface ScrapeResult {
   races: Race[];
@@ -52,8 +64,125 @@ function toNumber(value: unknown, fallback = 0): number {
   return Number.isFinite(n) ? n : fallback;
 }
 
+interface EbayiHippodrome {
+  KEY: string;
+  AD: string;
+  YER: string;
+  GUN: string | null;
+}
+
 /**
- * Attempt 1: TJK's official JSON data API.
+ * Attempt 1: TJK's public, keyless "ebayi" JSON feed.
+ * https://ebayi.tjk.org/s/d/program/{YYYYMMDD}/yarislar.json lists today's
+ * hippodromes; https://ebayi.tjk.org/s/d/program/{YYYYMMDD}/full/{KEY}.json
+ * gives the full race card + entries for one hippodrome. No auth header of
+ * any kind. Returns null (not throws) on any failure so callers fall
+ * through to the next source.
+ */
+async function fetchFromTjkEbayi(): Promise<Race[] | null> {
+  const date = todayIso().replace(/-/g, ""); // YYYYMMDD
+  try {
+    const listRes = await fetch(
+      `${TJK_EBAYI_BASE_URL}/program/${date}/yarislar.json`,
+      { headers: { "User-Agent": USER_AGENT, Accept: "application/json" }, cache: "no-store" }
+    );
+
+    if (!listRes.ok) {
+      console.error(`[scraper] TJK ebayi hippodrome list HTTP ${listRes.status}`);
+      return null;
+    }
+
+    const hippodromes: EbayiHippodrome[] = await listRes.json();
+    if (!Array.isArray(hippodromes) || hippodromes.length === 0) return null;
+
+    // Only hippodromes with a GUN (day number) actually have local TJK races
+    // today; entries like foreign tracks (Doncaster, Fairview, ...) carry
+    // GUN: null and are informational only, not TJK's own program.
+    const localHippodromes = hippodromes.filter((h) => h.GUN);
+    if (localHippodromes.length === 0) return null;
+
+    const races: Race[] = [];
+
+    for (const hip of localHippodromes) {
+      const fullRes = await fetch(
+        `${TJK_EBAYI_BASE_URL}/program/${date}/full/${encodeURIComponent(hip.KEY)}.json`,
+        { headers: { "User-Agent": USER_AGENT, Accept: "application/json" }, cache: "no-store" }
+      );
+      if (!fullRes.ok) continue;
+
+      const full = await fullRes.json();
+      const kosular = Array.isArray(full?.kosular) ? full.kosular : [];
+
+      for (const k of kosular) {
+        const raceNumber = toNumber(k.NO ?? k.RACENO, races.length + 1);
+        const raceId = `tjk-${hip.KEY}-${raceNumber}-${todayIso()}`;
+
+        const horses: Horse[] = (Array.isArray(k.atlar) ? k.atlar : []).map(
+          (h: any, hIdx: number) => {
+            // GANYAN (live win odds) is frequently blank on this feed until
+            // TJK opens the betting window for that race — 0 here is treated
+            // by lib/ai.ts as "odds not yet available", never as "0% implied
+            // probability" (see finalizePredictions's oddsAvailable flag).
+            const currentOdds = toNumber(h.GANYAN, 0);
+            // SON6 is a compact recent-form string like "K2K1K4K2K7K1" —
+            // strip the "K" separators down to a "2-1-4-2-7-1" style form.
+            const form =
+              typeof h.SON6 === "string" && h.SON6.length > 0
+                ? h.SON6.replace(/K/g, "-").replace(/^-/, "")
+                : undefined;
+
+            return {
+              id: `${raceId}-${h.NO ?? hIdx + 1}`,
+              raceId,
+              number: toNumber(h.NO, hIdx + 1),
+              name: h.AD ?? `Horse ${hIdx + 1}`,
+              jockey: h.JOKEYADI ?? "",
+              trainer: h.ANTRENORADI ?? "",
+              weightKg: toNumber(h.KILO),
+              currentOdds,
+              form,
+              daysSinceLastRun: undefined,
+            } satisfies Horse;
+          }
+        );
+
+        if (horses.length === 0) continue;
+
+        races.push({
+          id: raceId,
+          track: hip.AD ?? hip.KEY,
+          raceNumber,
+          name: `${hip.AD ?? hip.KEY} - ${raceNumber}. Koşu`,
+          startTime: k.TARIH && k.SAAT
+            ? parseTjkDateTime(k.TARIH, k.SAAT)
+            : new Date().toISOString(),
+          distanceMeters: toNumber(k.MESAFE),
+          surface: k.PISTADI_TR ?? k.PIST ?? "unknown",
+          condition: undefined,
+          horses,
+          scrapedAt: new Date().toISOString(),
+        });
+      }
+    }
+
+    return races.length > 0 ? races : null;
+  } catch (err) {
+    console.error("[scraper] TJK ebayi fetch failed:", err);
+    return null;
+  }
+}
+
+/** TJK's TARIH is "DD/MM/YYYY", SAAT is "HH:mm" — combine into an ISO string. */
+function parseTjkDateTime(tarih: string, saat: string): string {
+  const [dd, mm, yyyy] = tarih.split("/");
+  if (!dd || !mm || !yyyy) return new Date().toISOString();
+  const iso = `${yyyy}-${mm}-${dd}T${saat}:00`;
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? new Date().toISOString() : d.toISOString();
+}
+
+/**
+ * Attempt 2: TJK's official JSON data API.
  * Requires TJK_API_AUTH_KEY. Returns null (not throws) if the key is absent
  * or the call fails, so callers can fall through to the next source.
  */
@@ -252,6 +381,15 @@ function generateDemoRaces(): Race[] {
  * about data freshness/provenance.
  */
 export async function scrapeTodaysRaces(): Promise<ScrapeResult> {
+  const fromEbayi = await fetchFromTjkEbayi();
+  if (fromEbayi && fromEbayi.length > 0) {
+    return {
+      races: fromEbayi,
+      source: "tjk-ebayi",
+      note: "Fetched live from TJK's public ebayi.tjk.org feed (real races, structural data only — live odds populate closer to post time).",
+    };
+  }
+
   const fromApi = await fetchFromTjkApi();
   if (fromApi && fromApi.length > 0) {
     return {
@@ -274,6 +412,6 @@ export async function scrapeTodaysRaces(): Promise<ScrapeResult> {
     races: generateDemoRaces(),
     source: "demo",
     note:
-      "TJK data was unreachable (no TJK_API_AUTH_KEY set and/or the public page blocked automated requests). Serving a clearly-labeled synthetic dataset so the pipeline remains demoable end-to-end.",
+      "TJK data was unreachable from every live source (ebayi feed, authenticated API, HTML page). Serving a clearly-labeled synthetic dataset so the pipeline remains demoable end-to-end.",
   };
 }

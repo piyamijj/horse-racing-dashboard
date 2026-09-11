@@ -58,6 +58,8 @@ export interface HorsePrediction {
   impliedProbabilityPercent: number;
   /** winProbabilityPercent - impliedProbabilityPercent; positive = value bet. */
   valueEdgePercent: number;
+  /** False when the track hasn't published live odds yet (pre-market window); in that case implied probability/value edge are not meaningful and isValueBet is forced false. */
+  oddsAvailable: boolean;
   /** Whether the model flags this as a +EV "value bet". */
   isValueBet: boolean;
   /** Structured mathematical/statistical reasoning, not free-form guessing. */

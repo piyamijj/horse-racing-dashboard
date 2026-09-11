@@ -218,14 +218,46 @@ async function analyzeWithGroq(race: Race): Promise<HorsePrediction[]> {
   return finalizePredictions(race, raw);
 }
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Gemini's free tier intermittently returns 503 "high demand" errors that
+ * clear within seconds (observed live: same key/model alternates between
+ * 200 and 503 call to call) — a single retry with a short backoff recovers
+ * the large majority of these without needing to fall back to Groq (whose
+ * free tier has a much tighter daily token budget, better saved for when
+ * Gemini is genuinely down rather than momentarily busy).
+ */
+async function analyzeWithGeminiRetrying(race: Race): Promise<HorsePrediction[]> {
+  const attempts = 3;
+  let lastErr: unknown;
+
+  for (let i = 0; i < attempts; i++) {
+    try {
+      return await analyzeWithGemini(race);
+    } catch (err) {
+      lastErr = err;
+      const message = err instanceof Error ? err.message : String(err);
+      const isTransient = message.includes("503") || message.includes("UNAVAILABLE");
+      if (!isTransient || i === attempts - 1) throw err;
+      await sleep(1500 * (i + 1));
+    }
+  }
+
+  throw lastErr;
+}
+
 /**
  * Main entry point used by /api/predict.
- * Tries Gemini first; on any failure (missing key, rate limit, invalid JSON),
- * falls back to Groq. Throws only if both providers fail.
+ * Tries Gemini first (with retry on transient 503s), falling back to Groq
+ * only if Gemini still fails (missing key, non-transient error, or retries
+ * exhausted). Throws only if both providers fail.
  */
 export async function analyzeRace(race: Race): Promise<RacePrediction> {
   try {
-    const predictions = await analyzeWithGemini(race);
+    const predictions = await analyzeWithGeminiRetrying(race);
     return {
       raceId: race.id,
       generatedAt: new Date().toISOString(),

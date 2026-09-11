@@ -136,6 +136,16 @@ export default function AltiliGanyanPage() {
                       <span className="font-medium">{leg.raceNumber}. Koşu</span>
                     </td>
                     <td className="px-4 py-3 text-muted">{formatTime(leg.startTime)}</td>
+                    {leg.pending ? (
+                      <td colSpan={3} className="px-4 py-3">
+                        <Badge tone="warning">Analiz bekleniyor</Badge>
+                        <p className="text-xs text-muted mt-1">
+                          Bu ayak için yapay zeka analizi şu anda oluşturulamadı
+                          (sağlayıcı geçici olarak meşgul). Sayfayı yenileyin.
+                        </p>
+                      </td>
+                    ) : (
+                    <>
                     <td className="px-4 py-3">
                       <div className="flex items-center gap-2">
                         <span className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-primary/15 text-primary text-xs font-bold">
@@ -185,6 +195,8 @@ export default function AltiliGanyanPage() {
                         <span className="text-xs text-muted">Belirgin sürpriz sinyali yok</span>
                       )}
                     </td>
+                    </>
+                    )}
                   </tr>
                 ))}
               </tbody>

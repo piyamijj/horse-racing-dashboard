@@ -120,6 +120,9 @@ export interface AltiliLegSummary {
   raceNumber: number;
   track: string;
   startTime: string;
+  /** True when this leg's AI analysis could not be generated right now (e.g. AI provider temporarily unavailable) — topPick/nearTie/upset are not meaningful in that case. */
+  pending?: boolean;
+  pendingReason?: string;
   topPick: { horseNumber: number; horseName: string; winProbabilityPercent: number };
   /** A second horse whose probability is close to the top pick's (near-tie), if any. */
   nearTie?: { horseNumber: number; horseName: string; winProbabilityPercent: number };

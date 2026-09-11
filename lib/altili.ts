@@ -126,6 +126,14 @@ function summarizeLeg(
  * works right after a fresh /api/scrape, before every leg has been opened in
  * the detail view yet). Returns null if today's Altılı Ganyan block can't be
  * identified from the current data.
+ *
+ * Each leg's AI call is isolated: on a free-tier AI provider, 6 sequential
+ * calls WILL occasionally hit a transient failure (observed live: Gemini's
+ * free tier intermittently 503s, and the Groq fallback has a tight daily
+ * token budget shared across the whole app). A single leg failing must not
+ * blank out the other 5 legs the user actually wants to see — so a failed
+ * leg is reported with pending: true and an error message instead of
+ * aborting the whole table.
  */
 export async function buildAltiliSummary(allRaces: Race[]): Promise<AltiliSummary | null> {
   const legs = findAltiliLegs(allRaces);
@@ -134,8 +142,25 @@ export async function buildAltiliSummary(allRaces: Race[]): Promise<AltiliSummar
   const legSummaries: AltiliLegSummary[] = [];
   for (let i = 0; i < legs.length; i++) {
     const race = legs[i];
-    const prediction = await getOrCreatePrediction(race);
-    legSummaries.push(summarizeLeg(i + 1, race, prediction));
+    try {
+      const prediction = await getOrCreatePrediction(race);
+      legSummaries.push(summarizeLeg(i + 1, race, prediction));
+    } catch (err) {
+      console.error(`[altili] leg ${i + 1} (${race.id}) prediction failed:`, err);
+      legSummaries.push({
+        legNumber: i + 1,
+        raceId: race.id,
+        raceNumber: race.raceNumber,
+        track: race.track,
+        startTime: race.startTime,
+        topPick: { horseNumber: 0, horseName: "", winProbabilityPercent: 0 },
+        pending: true,
+        pendingReason:
+          err instanceof Error
+            ? err.message
+            : "Bu ayak için analiz şu anda oluşturulamadı.",
+      });
+    }
   }
 
   return {

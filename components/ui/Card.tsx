@@ -1,7 +1,7 @@
 import type { ReactNode } from "react";
 
 export interface CardProps {
-  children: ReactNode;
+  children?: ReactNode;
   className?: string;
   /** Optional header row content (title/subtitle/actions) rendered above the body. */
   header?: ReactNode;

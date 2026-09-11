@@ -26,11 +26,30 @@ export function activeStoreBackend(): "supabase" | "local-cache" {
   return isSupabaseConfigured() ? "supabase" : "local-cache";
 }
 
+/**
+ * Supabase is the intended primary store once configured, but a misconfigured
+ * or not-yet-migrated Supabase project (e.g. schema.sql not run yet) must not
+ * take the whole app down. Every Supabase call below is wrapped so a failure
+ * degrades to the local cache with a clear console warning instead of a 500 —
+ * note this degrade is NOT durable on Vercel (see lib/cache.ts), so it is a
+ * safety net for demoing, not a substitute for actually running schema.sql.
+ */
+function warnFallback(op: string, err: unknown): void {
+  console.error(
+    `[store] Supabase ${op} failed, falling back to local cache. Run supabase/schema.sql against your project to fix this permanently. Error:`,
+    err
+  );
+}
+
 /** Persist today's freshly scraped races. */
 export async function storeSetRaces(races: Race[]): Promise<void> {
   if (isSupabaseConfigured()) {
-    await supabaseUpsertRaces(races);
-    return;
+    try {
+      await supabaseUpsertRaces(races);
+      return;
+    } catch (err) {
+      warnFallback("upsert races", err);
+    }
   }
   cacheSetRaces(races);
 }
@@ -41,12 +60,16 @@ export async function storeGetRaces(): Promise<{
   updatedAt: string | null;
 }> {
   if (isSupabaseConfigured()) {
-    const races = await supabaseGetRaces();
-    const updatedAt = races.reduce<string | null>((latest, r) => {
-      if (!latest || r.scrapedAt > latest) return r.scrapedAt;
-      return latest;
-    }, null);
-    return { races, updatedAt };
+    try {
+      const races = await supabaseGetRaces();
+      const updatedAt = races.reduce<string | null>((latest, r) => {
+        if (!latest || r.scrapedAt > latest) return r.scrapedAt;
+        return latest;
+      }, null);
+      return { races, updatedAt };
+    } catch (err) {
+      warnFallback("read races", err);
+    }
   }
   return cacheGetRaces();
 }
@@ -54,7 +77,11 @@ export async function storeGetRaces(): Promise<{
 /** Read a single race by id. */
 export async function storeGetRaceById(raceId: string): Promise<Race | undefined> {
   if (isSupabaseConfigured()) {
-    return supabaseGetRaceById(raceId);
+    try {
+      return await supabaseGetRaceById(raceId);
+    } catch (err) {
+      warnFallback("read race by id", err);
+    }
   }
   return cacheGetRaceById(raceId);
 }
@@ -62,8 +89,12 @@ export async function storeGetRaceById(raceId: string): Promise<Race | undefined
 /** Persist the AI-generated prediction for a race. */
 export async function storeSetPrediction(prediction: RacePrediction): Promise<void> {
   if (isSupabaseConfigured()) {
-    await supabaseUpsertPrediction(prediction);
-    return;
+    try {
+      await supabaseUpsertPrediction(prediction);
+      return;
+    } catch (err) {
+      warnFallback("upsert prediction", err);
+    }
   }
   cacheSetPrediction(prediction);
 }
@@ -73,7 +104,11 @@ export async function storeGetPrediction(
   raceId: string
 ): Promise<RacePrediction | undefined> {
   if (isSupabaseConfigured()) {
-    return supabaseGetPrediction(raceId);
+    try {
+      return await supabaseGetPrediction(raceId);
+    } catch (err) {
+      warnFallback("read prediction", err);
+    }
   }
   return cacheGetPrediction(raceId);
 }

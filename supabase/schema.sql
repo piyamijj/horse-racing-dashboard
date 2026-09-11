@@ -17,7 +17,8 @@ create table if not exists races (
   surface          text not null,
   condition        text,
   horses           jsonb not null default '[]'::jsonb,
-  scraped_at       timestamptz not null default now()
+  scraped_at       timestamptz not null default now(),
+  betting_types_raw text
 );
 
 create index if not exists idx_races_start_time on races (start_time);

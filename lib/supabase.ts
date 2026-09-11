@@ -88,6 +88,7 @@ export async function supabaseUpsertRaces(races: Race[]): Promise<void> {
     condition: race.condition ?? null,
     horses: race.horses,
     scraped_at: race.scrapedAt,
+    betting_types_raw: race.bettingTypesRaw ?? null,
   }));
 
   const { error } = await client.from("races").upsert(rows, { onConflict: "id" });
@@ -121,6 +122,7 @@ export async function supabaseGetRaces(): Promise<Race[]> {
     condition: row.condition ?? undefined,
     horses: row.horses ?? [],
     scrapedAt: row.scraped_at,
+    bettingTypesRaw: row.betting_types_raw ?? undefined,
   }));
 }
 
@@ -151,6 +153,7 @@ export async function supabaseGetRaceById(raceId: string): Promise<Race | undefi
     condition: data.condition ?? undefined,
     horses: data.horses ?? [],
     scrapedAt: data.scraped_at,
+    bettingTypesRaw: data.betting_types_raw ?? undefined,
   };
 }
 
